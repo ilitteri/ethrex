@@ -22,6 +22,7 @@ use std::{
         Arc, Mutex,
         mpsc::{SyncSender, sync_channel},
     },
+    time::Duration,
 };
 use tracing::{debug, error, info};
 
@@ -150,6 +151,21 @@ impl Store {
         opts.disable_fsync = true;
         opts.page_cache_size = 4 * 1024 * 1024 * 1024; // 4Gb
 
+        // opts.use_checksums = false
+        // opts.wal_background_sync_interval = None;
+        // opts.max_wal_size = 256 * 1024 * 1024;
+        // opts.wait_bg_threads_on_drop = true;
+
+        // opts.wal_write_batch_memory_limit = 8 * 1024 * 1024;
+        // opts.wal_write_batch_memory_limit = 1024 * 1024 * 1024;
+
+        // opts.page_cache_size = 1024 * 1024 * 1024;
+
+        // opts.wal_new_file_on_checkpoint = true;
+        opts.wal_new_file_on_checkpoint = false;
+
+        // opts.file_lock_timeout = Duration::from_secs(5);
+
         let environment = canopydb::Environment::with_options(opts).unwrap();
 
         // Current column families that the code expects
@@ -176,11 +192,30 @@ impl Store {
         // Add all existing CFs (we must open them to be able to drop obsolete ones later)
         for cf in expected_column_families {
             let mut db_opts = DbOptions::new();
+            // db_opts.use_wal = true;
+            // Can't use group_commit without a WAL
+            // db_opts.use_wal = false;
+
+            // db_opts.default_commit_sync = false;
+            // db_opts.checkpoint_db_on_drop = false;
+            // db_opts.checkpoint_interval = Duration::from_secs(30);
+
+            // db_opts.write_txn_memory_limit = 64 * 1024 * 1024;
+
+            // db_opts.checkpoint_target_size = 64 * 1024 * 1024;
+
+            // db_opts.throttle_memory_limit = 256 * 1024 * 1024;
+
+            // db_opts.stall_memory_limit = 256 * 1024 * 1024;
+
             let db_handle = environment
                 .get_or_create_database_with(cf, db_opts)
                 .unwrap();
             let tx = db_handle.begin_write_concurrent().unwrap();
             let mut tree_opts = TreeOptions::new();
+            // tree_opts.fixed_key_len = -1;
+            // tree_opts.fixed_value_len = -1;
+            // tree_opts.compress_overflow_values = Some(12 * 1024);
             tx.get_or_create_tree_with(b"", tree_opts).unwrap();
             tx.commit().unwrap();
             dbs.insert(cf.to_string(), db_handle);

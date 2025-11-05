@@ -6,7 +6,7 @@ use crate::{
     },
 };
 use bytes::Bytes;
-use canopydb::EnvOptions;
+use canopydb::{DbOptions, EnvOptions, TreeOptions};
 use ethrex_common::{
     H256,
     types::{
@@ -175,10 +175,13 @@ impl Store {
 
         // Add all existing CFs (we must open them to be able to drop obsolete ones later)
         for cf in expected_column_families {
-            // default is handled automatically
-            let db_handle = environment.get_or_create_database(cf).unwrap();
+            let mut db_opts = DbOptions::new();
+            let db_handle = environment
+                .get_or_create_database_with(cf, db_opts)
+                .unwrap();
             let tx = db_handle.begin_write_concurrent().unwrap();
-            tx.get_or_create_tree(b"").unwrap();
+            let mut tree_opts = TreeOptions::new();
+            tx.get_or_create_tree_with(b"", tree_opts).unwrap();
             tx.commit().unwrap();
             dbs.insert(cf.to_string(), db_handle);
         }

@@ -6,7 +6,7 @@ use crossbeam::channel::{Receiver, Sender, bounded};
 use ethereum_types::H256;
 use ethrex_threadpool::ThreadPool;
 use std::{sync::Arc, thread::scope};
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, Default, Clone)]
 struct StackElement {
@@ -169,7 +169,9 @@ where
     let mut right_side_opt: Option<(H256, Vec<u8>)> = data_iter.next();
 
     while let Some(right_side) = right_side_opt {
+        info!("Node batches to write stuck on receiver: {}", buffer_receiver.len());
         if nodes_to_write.len() as u64 > SIZE_TO_WRITE_DB {
+            info!("Writing {} nodes", nodes_to_write.len());
             let buffer_sender = buffer_sender.clone();
             scope.execute_priority(Box::new(move || {
                 let _ = flush_nodes_to_write(nodes_to_write, db, buffer_sender);
@@ -177,6 +179,7 @@ where
             nodes_to_write = buffer_receiver
                 .recv()
                 .expect("This channel shouldn't close");
+            info!("Read batch of nodes of len {}; {} batches in receiver", nodes_to_write.len(), buffer_receiver.len());
         }
 
         let right_side_path = Nibbles::from_bytes(right_side.0.as_bytes());

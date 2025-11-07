@@ -169,7 +169,9 @@ where
     let mut right_side_opt: Option<(H256, Vec<u8>)> = data_iter.next();
 
     while let Some(right_side) = right_side_opt {
-        info!("Node batches to write stuck on receiver: {}", buffer_receiver.len());
+        // info!("Node batches to write stuck on receiver: {}", buffer_receiver.len());
+        // When low ram usage: 30-31
+        // When high ram usage: 8-10
         if nodes_to_write.len() as u64 > SIZE_TO_WRITE_DB {
             info!("Writing {} nodes", nodes_to_write.len());
             let buffer_sender = buffer_sender.clone();

@@ -73,7 +73,7 @@ path = "./lib.rs"
 
 [features]
 debug = ["ethrex-vm/debug"]
-default = ["rocksdb", "c-kzg", "metrics", "jemalloc", "dev"]
+default = ["c-kzg", "metrics", "jemalloc", "dev"]
 dev = ["dep:ethrex-dev"]
 c-kzg = [
   "ethrex-vm/c-kzg",

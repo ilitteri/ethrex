@@ -42,7 +42,7 @@ pub enum TrieGenerationError {
 }
 
 pub const SIZE_TO_WRITE_DB: u64 = 20_000;
-pub const BUFFER_COUNT: u64 = 32;
+pub const BUFFER_COUNT: u64 = 2;
 
 impl CenterSide {
     fn from_value(tuple: (H256, Vec<u8>)) -> CenterSide {
@@ -169,11 +169,10 @@ where
     let mut right_side_opt: Option<(H256, Vec<u8>)> = data_iter.next();
 
     while let Some(right_side) = right_side_opt {
-        // info!("Node batches to write stuck on receiver: {}", buffer_receiver.len());
+        info!("Node batches to write stuck on receiver: {}", buffer_receiver.len());
         // When low ram usage: 30-31
         // When high ram usage: 8-10
         if nodes_to_write.len() as u64 > SIZE_TO_WRITE_DB {
-            info!("Writing {} nodes", nodes_to_write.len());
             let buffer_sender = buffer_sender.clone();
             scope.execute_priority(Box::new(move || {
                 let _ = flush_nodes_to_write(nodes_to_write, db, buffer_sender);
@@ -181,7 +180,6 @@ where
             nodes_to_write = buffer_receiver
                 .recv()
                 .expect("This channel shouldn't close");
-            info!("Read batch of nodes of len {}; {} batches in receiver", nodes_to_write.len(), buffer_receiver.len());
         }
 
         let right_side_path = Nibbles::from_bytes(right_side.0.as_bytes());

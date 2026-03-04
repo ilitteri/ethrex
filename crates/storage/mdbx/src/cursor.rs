@@ -109,6 +109,24 @@ impl Cursor<'_, RW> {
         Ok(())
     }
 
+    /// Append a key-value pair using MDBX_APPEND (O(1) if key > all existing keys).
+    ///
+    /// Returns an error if the key is not strictly greater than the current last key.
+    /// Use this for sequential inserts where keys are in ascending order.
+    pub fn append(&mut self, key: &[u8], value: &[u8]) -> Result<(), MdbxError> {
+        let key_val = ffi::MDBX_val::from_slice(key);
+        let mut data_val = ffi::MDBX_val::from_slice(value);
+        unsafe {
+            MdbxError::from_code(ffi::mdbx_cursor_put(
+                self.cursor,
+                &key_val,
+                &mut data_val,
+                ffi::MDBX_APPEND,
+            ))?;
+        }
+        Ok(())
+    }
+
     /// Delete the entry at the current cursor position.
     ///
     /// The cursor must be positioned on a valid entry (e.g. after a successful

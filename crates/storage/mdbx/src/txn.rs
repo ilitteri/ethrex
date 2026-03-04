@@ -15,9 +15,6 @@ pub struct RO;
 /// Marker type for read-write transactions.
 pub struct RW;
 
-/// Maximum number of reset RO handles kept in the pool.
-const RO_TXN_POOL_CAP: usize = 32;
-
 /// A type-safe MDBX transaction.
 ///
 /// `K` is either [`RO`] or [`RW`], restricting which operations are available.
@@ -173,11 +170,9 @@ impl<K> Drop for Transaction<K> {
         if let Some(ref pool) = self.pool {
             let rc = unsafe { ffi::mdbx_txn_reset(self.txn) };
             if rc == ffi::MDBX_SUCCESS {
-                if let Ok(mut vec) = pool.lock() {
-                    if vec.len() < RO_TXN_POOL_CAP {
-                        vec.push(self.txn);
-                        return;
-                    }
+                // ArrayQueue::push returns Err if full; fall through to abort in that case.
+                if pool.push(self.txn).is_ok() {
+                    return;
                 }
             }
         }

@@ -347,6 +347,46 @@ mod tests {
     }
 
     #[test]
+    fn cursor_append_sorted_succeeds_and_unsorted_fails() {
+        let (env, dir) = open_test_env();
+
+        // Append in sorted order — must succeed
+        {
+            let txn = env.begin_rw_txn().unwrap();
+            {
+                let mut cursor = txn.cursor("test_table").unwrap();
+                cursor.append(b"key1", b"v1").unwrap();
+                cursor.append(b"key2", b"v2").unwrap();
+                cursor.append(b"key3", b"v3").unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        // Verify all entries are present
+        {
+            let txn = env.begin_ro_txn().unwrap();
+            assert_eq!(txn.get("test_table", b"key1").unwrap(), Some(b"v1".to_vec()));
+            assert_eq!(txn.get("test_table", b"key2").unwrap(), Some(b"v2".to_vec()));
+            assert_eq!(txn.get("test_table", b"key3").unwrap(), Some(b"v3".to_vec()));
+        }
+
+        // Append a key that is NOT greater than the last key — must error
+        {
+            let txn = env.begin_rw_txn().unwrap();
+            {
+                let mut cursor = txn.cursor("test_table").unwrap();
+                // "key2" < "key3", so MDBX_APPEND should return an error
+                let result = cursor.append(b"key2", b"bad");
+                assert!(result.is_err(), "expected error for out-of-order append");
+            }
+            // Do not commit — let the txn abort on drop
+        }
+
+        drop(env);
+        cleanup(&dir);
+    }
+
+    #[test]
     fn copy_checkpoint() {
         let (env, dir) = open_test_env();
 

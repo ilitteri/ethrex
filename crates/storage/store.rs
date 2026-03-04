@@ -15,9 +15,12 @@ use crate::{
     },
     apply_prefix,
     backend::in_memory::InMemoryBackend,
+    codecs::{
+        CompactDecode, CompactEncode, decode_tx_location, encode_tx_location,
+    },
     error::StoreError,
     layering::{TrieLayerCache, TrieWrapper},
-    rlp::{BlockBodyRLP, BlockHeaderRLP, BlockRLP},
+    rlp::BlockRLP,
     trie::{BackendTrieDB, BackendTrieDBLocked},
     utils::{ChainDataIndex, SnapStateIndex},
 };
@@ -278,11 +281,11 @@ impl Store {
                 let block_hash = block.hash();
                 let hash_key = block_hash.encode_to_vec();
 
-                let header_value_rlp = BlockHeaderRLP::from(block.header.clone());
-                tx.put(HEADERS, &hash_key, header_value_rlp.bytes())?;
+                let header_value = block.header.to_compact_vec();
+                tx.put(HEADERS, &hash_key, &header_value)?;
 
-                let body_value = BlockBodyRLP::from_bytes(block.body.encode_to_vec());
-                tx.put(BODIES, &hash_key, body_value.bytes())?;
+                let body_value = block.body.to_compact_vec();
+                tx.put(BODIES, &hash_key, &body_value)?;
 
                 tx.put(BLOCK_NUMBERS, &hash_key, &block_number.to_le_bytes())?;
 
@@ -292,7 +295,8 @@ impl Store {
                     let mut composite_key = Vec::with_capacity(64);
                     composite_key.extend_from_slice(tx_hash.as_bytes());
                     composite_key.extend_from_slice(block_hash.as_bytes());
-                    let location_value = (block_number, block_hash, index as u64).encode_to_vec();
+                    let location_value =
+                        encode_tx_location(block_number, block_hash, index as u64);
                     tx.put(TRANSACTION_LOCATIONS, &composite_key, &location_value)?;
                 }
             }
@@ -309,7 +313,7 @@ impl Store {
         block_header: BlockHeader,
     ) -> Result<(), StoreError> {
         let hash_key = block_hash.encode_to_vec();
-        let header_value = BlockHeaderRLP::from(block_header).into_vec();
+        let header_value = block_header.to_compact_vec();
         self.write_async(HEADERS, hash_key, header_value).await
     }
 
@@ -324,7 +328,7 @@ impl Store {
             let block_hash = header.hash();
             let block_number = header.number;
             let hash_key = block_hash.encode_to_vec();
-            let header_value = BlockHeaderRLP::from(header).into_vec();
+            let header_value = header.to_compact_vec();
 
             txn.put(HEADERS, &hash_key, &header_value)?;
 
@@ -354,7 +358,7 @@ impl Store {
         block_body: BlockBody,
     ) -> Result<(), StoreError> {
         let hash_key = block_hash.encode_to_vec();
-        let body_value = BlockBodyRLP::from(block_body).into_vec();
+        let body_value = block_body.to_compact_vec();
         self.write_async(BODIES, hash_key, body_value).await
     }
 
@@ -383,7 +387,7 @@ impl Store {
             let mut txn = backend.begin_write()?;
             txn.delete(
                 CANONICAL_BLOCK_HASHES,
-                block_number.to_le_bytes().as_slice(),
+                block_number.to_be_bytes().as_slice(),
             )?;
             txn.delete(BODIES, &hash_key)?;
             txn.delete(HEADERS, &hash_key)?;
@@ -409,7 +413,7 @@ impl Store {
             let txn = backend.begin_read()?;
             for number in numbers {
                 let Some(hash) = txn
-                    .get(CANONICAL_BLOCK_HASHES, number.to_le_bytes().as_slice())?
+                    .get(CANONICAL_BLOCK_HASHES, number.to_be_bytes().as_slice())?
                     .map(|bytes| H256::decode(bytes.as_slice()))
                     .transpose()?
                 else {
@@ -419,9 +423,8 @@ impl Store {
                 let hash_key = hash.encode_to_vec();
                 let block_body_opt = txn
                     .get(BODIES, &hash_key)?
-                    .map(|bytes| BlockBodyRLP::from_bytes(bytes).to())
-                    .transpose()
-                    .map_err(StoreError::from)?;
+                    .map(|bytes| BlockBody::from_compact_vec(&bytes))
+                    .transpose()?;
 
                 block_bodies.push(block_body_opt);
             }
@@ -447,9 +450,8 @@ impl Store {
 
                 let Some(block_body) = txn
                     .get(BODIES, &hash_key)?
-                    .map(|bytes| BlockBodyRLP::from_bytes(bytes).to())
-                    .transpose()
-                    .map_err(StoreError::from)?
+                    .map(|bytes| BlockBody::from_compact_vec(&bytes))
+                    .transpose()?
                 else {
                     return Err(StoreError::Custom(format!(
                         "Block body not found for hash: {hash}"
@@ -470,9 +472,8 @@ impl Store {
     ) -> Result<Option<BlockBody>, StoreError> {
         self.read_async(BODIES, block_hash.encode_to_vec())
             .await?
-            .map(|bytes| BlockBodyRLP::from_bytes(bytes).to())
+            .map(|bytes| BlockBody::from_compact_vec(&bytes))
             .transpose()
-            .map_err(StoreError::from)
     }
 
     pub fn get_block_header_by_hash(
@@ -542,7 +543,7 @@ impl Store {
         let mut composite_key = Vec::with_capacity(64);
         composite_key.extend_from_slice(transaction_hash.as_bytes());
         composite_key.extend_from_slice(block_hash.as_bytes());
-        let location_value = (block_number, block_hash, index).encode_to_vec();
+        let location_value = encode_tx_location(block_number, block_hash, index);
 
         self.write_async(TRANSACTION_LOCATIONS, composite_key, location_value)
             .await
@@ -559,7 +560,7 @@ impl Store {
                 let mut composite_key = Vec::with_capacity(64);
                 composite_key.extend_from_slice(tx_hash.as_bytes());
                 composite_key.extend_from_slice(block_hash.as_bytes());
-                let location_value = (*block_number, *block_hash, *index).encode_to_vec();
+                let location_value = encode_tx_location(*block_number, *block_hash, *index);
                 (composite_key, location_value)
             })
             .collect();
@@ -586,7 +587,8 @@ impl Store {
                 // Ensure key is exactly tx_hash + block_hash (32 + 32 = 64 bytes)
                 // and starts with our exact tx_hash
                 if key.len() == 64 && &key[0..32] == tx_hash_bytes {
-                    transaction_locations.push(<(BlockNumber, BlockHash, Index)>::decode(&value)?);
+                    let (bn, bh, idx) = decode_tx_location(&value)?;
+                    transaction_locations.push((bn, bh, idx));
                 }
             }
 
@@ -599,7 +601,7 @@ impl Store {
                 let canonical_hash = {
                     tx.get(
                         CANONICAL_BLOCK_HASHES,
-                        block_number.to_le_bytes().as_slice(),
+                        block_number.to_be_bytes().as_slice(),
                     )?
                     .map(|bytes| H256::decode(bytes.as_slice()))
                     .transpose()?
@@ -625,7 +627,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         // FIXME: Use dupsort table
         let key = (block_hash, index).encode_to_vec();
-        let value = receipt.encode_to_vec();
+        let value = receipt.to_compact_vec();
         self.write_async(RECEIPTS, key, value).await
     }
 
@@ -640,7 +642,7 @@ impl Store {
             .enumerate()
             .map(|(index, receipt)| {
                 let key = (block_hash, index as u64).encode_to_vec();
-                let value = receipt.encode_to_vec();
+                let value = receipt.to_compact_vec();
                 (key, value)
             })
             .collect();
@@ -669,9 +671,8 @@ impl Store {
         let key = (block_hash, index).encode_to_vec();
         self.read_async(RECEIPTS, key)
             .await?
-            .map(|bytes| Receipt::decode(bytes.as_slice()))
+            .map(|bytes| Receipt::from_compact_vec(&bytes))
             .transpose()
-            .map_err(StoreError::from)
     }
 
     /// Get account code by its hash.
@@ -900,7 +901,7 @@ impl Store {
                 .begin_read()?
                 .get(
                     CANONICAL_BLOCK_HASHES,
-                    block_number.to_le_bytes().as_slice(),
+                    block_number.to_be_bytes().as_slice(),
                 )?
                 .map(|bytes| H256::decode(bytes.as_slice()))
                 .transpose()
@@ -1016,17 +1017,17 @@ impl Store {
             let mut txn = db.begin_write()?;
 
             for (block_number, block_hash) in new_canonical_blocks {
-                let head_key = block_number.to_le_bytes();
+                let head_key = block_number.to_be_bytes();
                 let head_value = block_hash.encode_to_vec();
                 txn.put(CANONICAL_BLOCK_HASHES, &head_key, &head_value)?;
             }
 
             for number in (head_number + 1)..=(latest) {
-                txn.delete(CANONICAL_BLOCK_HASHES, number.to_le_bytes().as_slice())?;
+                txn.delete(CANONICAL_BLOCK_HASHES, number.to_be_bytes().as_slice())?;
             }
 
             // Make head canonical
-            let head_key = head_number.to_le_bytes();
+            let head_key = head_number.to_be_bytes();
             let head_value = head_hash.encode_to_vec();
             txn.put(CANONICAL_BLOCK_HASHES, &head_key, &head_value)?;
 
@@ -1062,7 +1063,7 @@ impl Store {
             let key = (*block_hash, index).encode_to_vec();
             match txn.get(RECEIPTS, key.as_slice())? {
                 Some(receipt_bytes) => {
-                    let receipt = Receipt::decode(receipt_bytes.as_slice())?;
+                    let receipt = Receipt::from_compact_vec(&receipt_bytes)?;
                     receipts.push(receipt);
                     index += 1;
                 }
@@ -1152,7 +1153,7 @@ impl Store {
         let txn = self.backend.begin_read()?;
         txn.get(
             CANONICAL_BLOCK_HASHES,
-            block_number.to_le_bytes().as_slice(),
+            block_number.to_be_bytes().as_slice(),
         )?
         .map(|bytes| H256::decode(bytes.as_slice()))
         .transpose()
@@ -1303,7 +1304,7 @@ impl Store {
             FULLSYNC_HEADERS,
             headers
                 .into_iter()
-                .map(|header| (header.number.to_le_bytes().to_vec(), header.encode_to_vec()))
+                .map(|header| (header.number.to_be_bytes().to_vec(), header.to_compact_vec()))
                 .collect(),
         )
         .await
@@ -1319,8 +1320,8 @@ impl Store {
         // TODO: use read_bulk here
         for key in start..start + limit {
             let header_opt = read_tx
-                .get(FULLSYNC_HEADERS, &key.to_le_bytes())?
-                .map(|header| BlockHeader::decode(&header))
+                .get(FULLSYNC_HEADERS, &key.to_be_bytes())?
+                .map(|bytes| BlockHeader::from_compact_vec(&bytes))
                 .transpose()?;
             res.push(header_opt);
         }
@@ -1389,11 +1390,11 @@ impl Store {
             let block_hash = block.hash();
             let hash_key = block_hash.encode_to_vec();
 
-            let header_value_rlp = BlockHeaderRLP::from(block.header.clone());
-            tx.put(HEADERS, &hash_key, header_value_rlp.bytes())?;
+            let header_value = block.header.to_compact_vec();
+            tx.put(HEADERS, &hash_key, &header_value)?;
 
-            let body_value = BlockBodyRLP::from_bytes(block.body.encode_to_vec());
-            tx.put(BODIES, &hash_key, body_value.bytes())?;
+            let body_value = block.body.to_compact_vec();
+            tx.put(BODIES, &hash_key, &body_value)?;
 
             tx.put(BLOCK_NUMBERS, &hash_key, &block_number.to_le_bytes())?;
 
@@ -1403,7 +1404,8 @@ impl Store {
                 let mut composite_key = Vec::with_capacity(64);
                 composite_key.extend_from_slice(tx_hash.as_bytes());
                 composite_key.extend_from_slice(block_hash.as_bytes());
-                let location_value = (block_number, block_hash, index as u64).encode_to_vec();
+                let location_value =
+                    encode_tx_location(block_number, block_hash, index as u64);
                 tx.put(TRANSACTION_LOCATIONS, &composite_key, &location_value)?;
             }
         }
@@ -1411,7 +1413,7 @@ impl Store {
         for (block_hash, receipts) in update_batch.receipts {
             for (index, receipt) in receipts.into_iter().enumerate() {
                 let key = (block_hash, index as u64).encode_to_vec();
-                let value = receipt.encode_to_vec();
+                let value = receipt.to_compact_vec();
                 tx.put(RECEIPTS, &key, &value)?;
             }
         }
@@ -2708,7 +2710,7 @@ impl Store {
         let txn = self.backend.begin_read()?;
         txn.get(
             CANONICAL_BLOCK_HASHES,
-            block_number.to_le_bytes().as_slice(),
+            block_number.to_be_bytes().as_slice(),
         )?
         .map(|bytes| H256::decode(bytes.as_slice()))
         .transpose()
@@ -2734,9 +2736,8 @@ impl Store {
         let hash_key = block_hash.encode_to_vec();
         let header_value = txn.get(HEADERS, hash_key.as_slice())?;
         let mut header = header_value
-            .map(|bytes| BlockHeaderRLP::from_bytes(bytes).to())
-            .transpose()
-            .map_err(StoreError::from)?;
+            .map(|bytes| BlockHeader::from_compact_vec(&bytes))
+            .transpose()?;
         header.as_mut().inspect(|h| {
             // Set the hash so we avoid recomputing it later
             let _ = h.hash.set(block_hash);

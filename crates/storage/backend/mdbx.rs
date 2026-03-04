@@ -191,7 +191,11 @@ impl MdbxWriteBatch {
 
                 match &ops[i] {
                     WriteOp::Put { key, value, .. } => {
-                        cursor.put(key, value).map_err(mdbx_to_store)?;
+                        // Try APPEND first (O(1) if key > current max).
+                        // Falls back to UPSERT on MDBX_EKEYMISMATCH or any error.
+                        if cursor.append(key, value).is_err() {
+                            cursor.put(key, value).map_err(mdbx_to_store)?;
+                        }
                     }
                     WriteOp::Delete { table, key } => {
                         // Use direct txn.del for deletes — simpler and equally fast

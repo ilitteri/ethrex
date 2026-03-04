@@ -4158,6 +4158,7 @@ dependencies = [
 name = "ethrex-mdbx"
 version = "9.0.0"
 dependencies = [
+ "crossbeam-queue 0.3.12",
  "ethrex-mdbx-sys",
  "tracing",
 ]
@@ -4423,6 +4424,7 @@ dependencies = [
  "hex",
  "hex-literal 0.4.1",
  "lru 0.16.3",
+ "once_cell",
  "rayon",
  "rocksdb",
  "rustc-hash 2.1.1",

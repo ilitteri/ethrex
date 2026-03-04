@@ -1,3 +1,4 @@
+use crossbeam_queue::ArrayQueue;
 use ethrex_mdbx_sys as ffi;
 
 use crate::error::MdbxError;
@@ -7,19 +8,19 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Configuration for opening an MDBX environment.
 pub struct EnvConfig {
     /// Maximum DB file size. Default: 4 TB.
     pub max_size: isize,
-    /// Size at which the file grows. Default: 2 GB.
+    /// Size at which the file grows. Default: 4 GB.
     pub growth_step: isize,
-    /// Page size in bytes (must be power of 2). Default: 8192.
+    /// Page size in bytes (must be power of 2). Default: 4096 on Linux, auto on other platforms.
     pub page_size: isize,
-    /// Maximum number of named tables (DBIs). Default: 32.
+    /// Maximum number of named tables (DBIs). Default: 256.
     pub max_dbs: u64,
-    /// Maximum number of concurrent reader slots. Default: 256.
+    /// Maximum number of concurrent reader slots. Default: 32_000.
     pub max_readers: u64,
     /// Environment flags applied at open time.
     pub env_flags: ffi::MDBX_env_flags_t,
@@ -29,12 +30,20 @@ pub struct EnvConfig {
 
 impl Default for EnvConfig {
     fn default() -> Self {
+        // On Linux the system page size is 4 KB and MDBX allows 4096.
+        // On macOS (especially Apple Silicon) the system page size is 16 KB,
+        // so we fall back to -1 (auto) to let MDBX pick the correct value.
+        #[cfg(target_os = "linux")]
+        let page_size: isize = 4096;
+        #[cfg(not(target_os = "linux"))]
+        let page_size: isize = -1;
+
         EnvConfig {
             max_size: 4 * 1024 * 1024 * 1024 * 1024, // 4 TB
-            growth_step: 2 * 1024 * 1024 * 1024,      // 2 GB
-            page_size: 8192,                           // 8 KB
-            max_dbs: 32,
-            max_readers: 256,
+            growth_step: 4 * 1024 * 1024 * 1024,      // 4 GB
+            page_size,
+            max_dbs: 256,
+            max_readers: 32_000,
             env_flags: ffi::MDBX_NORDAHEAD
                 | ffi::MDBX_WRITEMAP
                 | ffi::MDBX_NOSTICKYTHREADS
@@ -47,10 +56,10 @@ impl Default for EnvConfig {
 }
 
 /// Maximum number of read-only transaction handles kept in the pool.
-const RO_TXN_POOL_CAP: usize = 32;
+const RO_TXN_POOL_CAP: usize = 256;
 
-/// Pool of reset read-only transaction handles for reuse via `mdbx_txn_renew`.
-pub(crate) type ReadTxnPool = Mutex<Vec<*mut ffi::MDBX_txn>>;
+/// Lock-free pool of reset read-only transaction handles for reuse via `mdbx_txn_renew`.
+pub(crate) type ReadTxnPool = ArrayQueue<*mut ffi::MDBX_txn>;
 
 /// An opened MDBX environment.
 ///
@@ -139,6 +148,15 @@ impl Environment {
             ))?;
         }
 
+        // 5b. Set rp_augment_limit to reduce lock contention on the reclaim list.
+        unsafe {
+            MdbxError::from_code(ffi::mdbx_env_set_option(
+                env,
+                ffi::MDBX_opt_rp_augment_limit,
+                256 * 1024,
+            ))?;
+        }
+
         // 6. Open all named tables in a write transaction
         let mut dbis = HashMap::new();
         unsafe {
@@ -175,7 +193,7 @@ impl Environment {
         Ok(Environment {
             env,
             dbis: Arc::new(dbis),
-            ro_pool: Arc::new(Mutex::new(Vec::with_capacity(RO_TXN_POOL_CAP))),
+            ro_pool: Arc::new(ArrayQueue::new(RO_TXN_POOL_CAP)),
         })
     }
 
@@ -186,7 +204,7 @@ impl Environment {
     /// cost of acquiring the `lck_rdt_lock` mutex on every read.
     pub fn begin_ro_txn(&self) -> Result<Transaction<RO>, MdbxError> {
         // Try to reuse a pooled handle.
-        if let Some(cached) = self.ro_pool.lock().unwrap().pop() {
+        if let Some(cached) = self.ro_pool.pop() {
             let rc = unsafe { ffi::mdbx_txn_renew(cached) };
             if rc == ffi::MDBX_SUCCESS {
                 return Ok(Transaction::new_pooled(
@@ -251,11 +269,9 @@ impl Environment {
 impl Drop for Environment {
     fn drop(&mut self) {
         // Abort all pooled RO transactions before closing the env.
-        if let Ok(mut pool) = self.ro_pool.lock() {
-            for txn in pool.drain(..) {
-                unsafe {
-                    ffi::mdbx_txn_abort(txn);
-                }
+        while let Some(txn) = self.ro_pool.pop() {
+            unsafe {
+                ffi::mdbx_txn_abort(txn);
             }
         }
         unsafe {

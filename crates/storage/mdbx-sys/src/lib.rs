@@ -113,6 +113,7 @@ pub const MDBX_CREATE: MDBX_db_flags_t = 0x40000;
 pub type MDBX_put_flags_t = u32;
 
 pub const MDBX_UPSERT: MDBX_put_flags_t = 0;
+pub const MDBX_APPEND: MDBX_put_flags_t = 0x20000;
 
 // ---------------------------------------------------------------------------
 // Copy flags (MDBX_copy_flags_t)
@@ -141,6 +142,7 @@ pub type MDBX_option_t = c_int;
 
 pub const MDBX_opt_max_db: MDBX_option_t = 0;
 pub const MDBX_opt_max_readers: MDBX_option_t = 1;
+pub const MDBX_opt_rp_augment_limit: MDBX_option_t = 4;
 
 // ---------------------------------------------------------------------------
 // Error codes
